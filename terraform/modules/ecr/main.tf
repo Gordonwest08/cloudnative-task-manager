@@ -21,6 +21,8 @@ resource "aws_ecr_repository" "repos" {
     encryption_type = "AES256"
   }
 
+  force_delete = true
+
   tags = {
     Name = "${var.project_name}-${each.key}-ecr"
   }
