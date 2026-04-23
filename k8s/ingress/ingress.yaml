@@ -1,0 +1,51 @@
+# k8s/ingress/ingress.yaml
+# The ALB controller watches for Ingress resources with
+# the annotation kubernetes.io/ingress.class: alb
+# When it sees this, it provisions a real AWS ALB
+# and configures it to route traffic to our services
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: taskmanager-ingress
+  namespace: production
+  annotations:
+    # Tells ALB controller to handle this ingress
+    kubernetes.io/ingress.class: alb
+    # Create an internet-facing ALB (not internal)
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # Route traffic to pod IPs directly (not node IPs)
+    alb.ingress.kubernetes.io/target-type: ip
+    # Listen on port 80
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # Health check path for the ALB target group
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    # Place ALB in public subnets
+    alb.ingress.kubernetes.io/subnets: "subnet-05a376719126914f1,subnet-079b382605bde01b7"
+spec:
+  rules:
+    - http:
+        paths:
+          # API routes go to backend
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 5000
+          # Health endpoint goes to backend
+          - path: /health
+            pathType: Prefix
+            backend:
+              service:
+                name: backend-service
+                port:
+                  number: 5000
+          # Everything else goes to frontend
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-service
+                port:
+                  number: 80
