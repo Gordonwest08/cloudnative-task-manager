@@ -248,3 +248,36 @@ resource "aws_iam_role_policy_attachment" "alb_controller" {
   role       = aws_iam_role.alb_controller.name
   policy_arn = aws_iam_policy.alb_controller.arn
 }
+# -------------------------------------------------------------------
+# EBS CSI DRIVER — IAM Role (IRSA)
+# Allows the EBS CSI controller to create/delete EBS volumes
+# -------------------------------------------------------------------
+resource "aws_iam_role" "ebs_csi_driver" {
+  name = "${var.project_name}-ebs-csi-driver-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.cluster.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${local.oidc_provider_url}:aud" = "sts.amazonaws.com"
+          "${local.oidc_provider_url}:sub" = "system:serviceaccount:kube-system:ebs-csi-controller-sa"
+        }
+      }
+    }]
+  })
+
+  tags = {
+    Name = "${var.project_name}-ebs-csi-driver-role"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_driver" {
+  role       = aws_iam_role.ebs_csi_driver.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}

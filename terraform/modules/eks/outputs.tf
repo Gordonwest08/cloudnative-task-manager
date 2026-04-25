@@ -29,3 +29,7 @@ output "oidc_provider_arn" {
   description = "OIDC provider ARN — useful for adding more IRSA roles later"
   value       = aws_iam_openid_connect_provider.cluster.arn
 }
+output "ebs_csi_driver_role_arn" {
+  description = "EBS CSI driver IAM role ARN"
+  value       = aws_iam_role.ebs_csi_driver.arn
+}

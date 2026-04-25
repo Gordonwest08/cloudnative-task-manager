@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: 910541869155.dkr.ecr.us-east-1.amazonaws.com/taskmanager/frontend:cfa776e
+          image: 910541869155.dkr.ecr.us-east-1.amazonaws.com/taskmanager/frontend:
           imagePullPolicy: Always
           ports:
             - containerPort: 80

@@ -48,3 +48,7 @@ output "next_steps" {
 
   EOT
 }
+output "ebs_csi_driver_role_arn" {
+  description = "EBS CSI driver IAM role ARN"
+  value       = module.eks.ebs_csi_driver_role_arn
+}
