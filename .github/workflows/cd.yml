@@ -1,0 +1,223 @@
+
+# .github/workflows/cd.yml
+#
+# CD Pipeline — runs on every push to main
+# Builds Docker images, pushes to ECR, deploys to EKS
+#
+# Flow:
+#   1. test        — run tests first, abort if they fail
+#   2. build-push  — build images, push to ECR with commit SHA tag
+#   3. deploy      — update Kubernetes deployments with new images
+
+name: CD — Build, Push, Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION:       ${{ secrets.AWS_REGION }}
+  ECR_REGISTRY:     ${{ secrets.ECR_REGISTRY }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+
+jobs:
+  # ── Job 1: Test ───────────────────────────────────────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: app/backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: app/backend
+        run: npm install
+
+      - name: Validate backend syntax
+        working-directory: app/backend
+        run: |
+          node --check src/index.js
+          node --check src/routes/tasks.js
+          node --check src/db/index.js
+          echo "✅ All backend files valid"
+
+      - name: Install frontend dependencies
+        working-directory: app/frontend
+        run: npm install --legacy-peer-deps
+
+      - name: Build frontend
+        working-directory: app/frontend
+        run: npm run build
+        env:
+          VITE_API_URL: http://placeholder
+
+      - name: Verify build output
+        run: |
+          test -d app/frontend/dist
+          echo "✅ Tests passed"
+
+  # ── Job 2: Build and Push to ECR ──────────────────────────────────
+  build-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: test
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        run: |
+          TAG=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Image tag: ${TAG}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install frontend dependencies
+        working-directory: app/frontend
+        run: npm install --legacy-peer-deps
+
+      - name: Get ALB URL for frontend build
+        id: alb
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+          ALB_HOST=$(kubectl get ingress taskmanager-ingress \
+            -n production \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' \
+            2>/dev/null || echo "")
+
+          if [ -z "$ALB_HOST" ]; then
+            echo "⚠️  No ALB found — using placeholder URL"
+            echo "alb_url=http://localhost:5000" >> $GITHUB_OUTPUT
+          else
+            echo "✅ ALB URL: http://${ALB_HOST}"
+            echo "alb_url=http://${ALB_HOST}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: app/backend
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/taskmanager/backend:${{ steps.meta.outputs.tag }}
+            ${{ env.ECR_REGISTRY }}/taskmanager/backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: app/frontend
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/taskmanager/frontend:${{ steps.meta.outputs.tag }}
+            ${{ env.ECR_REGISTRY }}/taskmanager/frontend:latest
+          build-args: |
+            VITE_API_URL=${{ steps.alb.outputs.alb_url }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          echo "## Images Pushed 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "- Backend: \`${{ env.ECR_REGISTRY }}/taskmanager/backend:${{ steps.meta.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Frontend: \`${{ env.ECR_REGISTRY }}/taskmanager/frontend:${{ steps.meta.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- ALB URL: \`${{ steps.alb.outputs.alb_url }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ── Job 3: Deploy to EKS ──────────────────────────────────────────
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build-push
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ secrets.AWS_REGION }} \
+            --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Verify cluster connection
+        run: |
+          kubectl get nodes
+          echo "✅ Connected to EKS cluster"
+
+      - name: Deploy backend
+        run: |
+          kubectl set image deployment/backend \
+            backend=${{ env.ECR_REGISTRY }}/taskmanager/backend:${{ needs.build-push.outputs.image-tag }} \
+            -n production
+
+          kubectl rollout status deployment/backend \
+            -n production \
+            --timeout=120s
+
+          echo "✅ Backend deployed: ${{ needs.build-push.outputs.image-tag }}"
+
+      - name: Deploy frontend
+        run: |
+          kubectl set image deployment/frontend \
+            frontend=${{ env.ECR_REGISTRY }}/taskmanager/frontend:${{ needs.build-push.outputs.image-tag }} \
+            -n production
+
+          kubectl rollout status deployment/frontend \
+            -n production \
+            --timeout=120s
+
+          echo "✅ Frontend deployed: ${{ needs.build-push.outputs.image-tag }}"
+
+      - name: Verify all pods healthy
+        run: |
+          kubectl get pods -n production
+          echo ""
+          kubectl get ingress -n production
+
+      - name: Deployment summary
+        run: |
+          ALB_HOST=$(kubectl get ingress taskmanager-ingress \
+            -n production \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+          echo "## Deployment Complete 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image tag**: \`${{ needs.build-push.outputs.image-tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cluster**: \`${{ secrets.EKS_CLUSTER_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Application URL**: http://${ALB_HOST}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
