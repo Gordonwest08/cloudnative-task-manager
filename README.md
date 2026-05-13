@@ -892,10 +892,10 @@ The `latest` tag is meaningless for operations. If a pod is running `:latest`, y
 
 ## 10. Author
 
-**[Your Name]**
+**Gordon West**
 Freelance DevOps & Cloud Engineer
-- GitHub: [@your-username](https://github.com/your-username)
-- LinkedIn: [your-linkedin](https://linkedin.com/in/your-profile)
+- GitHub: [@Gordonwest08](https://github.com/Gordonwest08)
+- LinkedIn: [linkedin.com/in/gordon-west-aws-junior-cloud-engineer ](https://linkedin.com/linkedin.com/in/gordon-west-aws-junior-cloud-engineer )
 
 ---
 
